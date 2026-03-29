@@ -1,0 +1,113 @@
+-- CONSULTAS Y OPTIMIZACIÓN 
+-- =========================================================================
+
+-- ÍNDICES DE OPTIMIZACIÓN 
+-- =========================================================================
+-- Los índices GIST son bastante importantes para hacer búsquedas rápidas con geometrías.
+
+CREATE INDEX idx_stores_coordinates ON stores USING GIST (coordinates);
+CREATE INDEX idx_users_location ON app_users USING GIST (frequent_location);
+CREATE INDEX idx_orders_delivery ON orders USING GIST (delivery_coordinate);
+CREATE INDEX idx_drivers_location ON drivers USING GIST (current_location);
+CREATE INDEX idx_zones_polygon ON delivery_zones USING GIST (coverage_polygon);
+CREATE INDEX idx_routes_path ON delivery_routes USING GIST (route_path);
+
+-- Índices B-Tree normales para IDs y estados (aceleran los WHERE y JOINs)
+CREATE INDEX idx_orders_status ON orders (status);
+CREATE INDEX idx_orders_store_user ON orders (store_id, user_id);
+
+
+-- CONSULTAS BÁSICAS E INTERMEDIAS (Reportes Generales)
+-- =========================================================================
+
+-- Todos los locales con su categoría
+SELECT s.store_id, s.name AS store, c.name AS category
+FROM stores s
+JOIN categories c ON s.category_id = c.category_id;
+
+-- Pedidos detallados (Usuario, Tienda, Estado)
+SELECT o.order_id, u.name AS user, s.name AS store, o.status, o.order_date
+FROM orders o
+JOIN app_users u ON o.user_id = u.user_id
+JOIN stores s ON o.store_id = s.store_id;
+
+-- Cantidad de pedidos por estado
+SELECT status, COUNT(order_id) AS total
+FROM orders
+GROUP BY status;
+
+-- Usuarios con más pedidos
+SELECT u.user_id, u.name, COUNT(o.order_id) AS total_orders
+FROM app_users u
+JOIN orders o ON u.user_id = o.user_id
+GROUP BY u.user_id, u.name
+ORDER BY total_orders DESC;
+
+
+--  CONSULTAS GEOESPACIALES 
+-- =========================================================================
+
+--  Tiendas en un radio de 5km desde un punto específico 
+SELECT store_id, name,
+    ST_Distance(coordinates, ST_SetSRID(ST_MakePoint(-69.6200, 18.4510), 4326)::geography) AS distance_m
+FROM stores
+WHERE ST_DWithin(coordinates, ST_SetSRID(ST_MakePoint(-69.6200, 18.4510), 4326)::geography, 5000) 
+ORDER BY distance_m
+LIMIT 5;
+
+-- Usuarios dentro de una zona de entrega espcifica (Búsqueda por ID de zona)
+SELECT u.user_id, u.name
+FROM app_users u
+JOIN delivery_zones z ON ST_Contains(z.coverage_polygon, u.frequent_location::geometry)
+WHERE z.zone_id = 1; 
+
+--  Pedidos activos dentro de una zona específica
+SELECT o.order_id, o.status
+FROM orders o
+JOIN delivery_zones z ON ST_Contains(z.coverage_polygon, o.delivery_coordinate::geometry)
+WHERE z.zone_id = 2 AND o.status = 'Pending';
+
+--  Tiendas que pertenecen a una zona de cobertura específica
+SELECT s.store_id, s.name
+FROM stores s
+JOIN delivery_zones z ON ST_Contains(z.coverage_polygon, s.coordinates::geometry)
+WHERE z.zone_id = 3;
+
+
+--  CONSULTAS AVANZADAS Y MÉTRICAS
+-- =========================================================================
+
+-- Ruta total recorrida por un pedido específico
+SELECT order_id, 
+       ST_Length(route_path::geography) AS total_distance_meters
+FROM delivery_routes
+WHERE order_id = 1;
+
+-- Pedido más lejano de su tienda (Auditoría de distancias)
+SELECT o.order_id, s.name AS store_name, 
+       ST_Distance(s.coordinates, o.delivery_coordinate) AS distance_m
+FROM orders o
+JOIN stores s ON o.store_id = s.store_id
+ORDER BY distance_m DESC
+LIMIT 10; 
+
+--  Zona de entrega con mayor demanda 
+SELECT z.zone_name, COUNT(o.order_id) AS total_orders
+FROM delivery_zones z
+JOIN orders o ON ST_Contains(z.coverage_polygon, o.delivery_coordinate::geometry)
+GROUP BY z.zone_name
+ORDER BY total_orders DESC;
+
+--  Buscar el repartidor más cercano para asignar un pedido nuevo, parecido a uber
+SELECT driver_id, name,
+       current_location <-> ST_SetSRID(ST_MakePoint(-69.6200, 18.4510), 4326)::geography AS distance_m
+FROM drivers
+ORDER BY current_location <-> ST_SetSRID(ST_MakePoint(-69.6200, 18.4510), 4326)::geography
+LIMIT 1;
+
+--  Buscar los 3 locales más cercanos a la ubicación actual de un usuario
+SELECT s.store_id, s.name,
+       s.coordinates <-> (SELECT frequent_location FROM app_users WHERE user_id = 5) AS distance_m
+FROM stores s
+ORDER BY s.coordinates <-> (SELECT frequent_location FROM app_users WHERE user_id = 5)
+LIMIT 3;

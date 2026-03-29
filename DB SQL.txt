@@ -1,0 +1,180 @@
+CREATE DATABASE tracefood_db;
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- 1. CREACIÓN DE TABLAS 
+-- ==========================================
+
+CREATE TABLE categories (
+    category_id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE stores (
+    store_id BIGSERIAL PRIMARY KEY,
+    category_id BIGINT NOT NULL REFERENCES categories(category_id),
+    name VARCHAR(150) NOT NULL,
+    capacity INTEGER,
+    coordinates GEOGRAPHY(Point, 4326) NOT NULL
+);
+
+CREATE TABLE delivery_zones (
+    zone_id BIGSERIAL PRIMARY KEY,
+    store_id BIGINT NOT NULL REFERENCES stores(store_id),
+    zone_name VARCHAR(150) NOT NULL,
+    coverage_polygon GEOMETRY(Polygon, 4326) NOT NULL
+);
+
+CREATE TABLE app_users (
+    user_id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(150) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    frequent_location GEOGRAPHY(Point, 4326)
+);
+
+CREATE TABLE drivers (
+    driver_id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(150) NOT NULL,
+    phone VARCHAR(20),
+    current_location GEOGRAPHY(Point, 4326)
+);
+
+CREATE TABLE orders (
+    order_id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES app_users(user_id),
+    store_id BIGINT NOT NULL REFERENCES stores(store_id),
+    driver_id BIGINT REFERENCES drivers(driver_id),
+    delivery_coordinate GEOGRAPHY(Point, 4326) NOT NULL,
+    order_date TIMESTAMPTZ DEFAULT NOW(),
+    status VARCHAR(50) DEFAULT 'Pending'
+);
+
+CREATE TABLE delivery_routes (
+    route_id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES orders(order_id),
+    route_path GEOMETRY(LineString, 4326) NOT NULL
+);
+
+-- 2. INSERCIÓN DE DATOS 
+-- ==========================================
+
+-- 1. Categories 
+INSERT INTO categories (name, description) VALUES
+('Pica Pollo y Fritura', 'Pollo frito, tostones, batata y fritos verdes'),
+('Comida Callejera', 'Chimis, yaroas, hot dogs y empanadas'),
+('Comedores y Platos del Día', 'La bandera dominicana, sancocho y guarniciones'),
+('Pizzerías Locales', 'Pizzas familiares, calzones y palitos de queso'),
+('Cafeterías', 'Desayunos, batidas, sándwiches y jugos naturales'),
+('Heladerías y Postres', 'Helados, bizcochos, tres leches y brownies'),
+('Mariscos y Pescados', 'Pescado frito, lambí, camarones y paellas'),
+('Comida Asiática', 'Sushi, fideos, arroz frito y rollos');
+
+-- 2. Stores 
+INSERT INTO stores (category_id, name, capacity, coordinates) VALUES
+-- Zona ITLA, Las Américas
+(3, 'Comedor Doña Tata', 45, ST_SetSRID(ST_MakePoint(-69.6205, 18.4510), 4326)::geography),
+(1, 'Pica Pollo El Expreso Oriental', 20, ST_SetSRID(ST_MakePoint(-69.6755, 18.4480), 4326)::geography),
+(2, 'Chimi El Compa', 10, ST_SetSRID(ST_MakePoint(-69.6100, 18.4460), 4326)::geography),
+(5, 'Cafetería El Estudiante', 60, ST_SetSRID(ST_MakePoint(-69.6215, 18.4515), 4326)::geography),
+(7, 'Mariscos La Caleta', 80, ST_SetSRID(ST_MakePoint(-69.6800, 18.4400), 4326)::geography),
+(6, 'Helados Chill Boca Chica', 25, ST_SetSRID(ST_MakePoint(-69.6050, 18.4490), 4326)::geography),
+-- Zona Santo Domingo Este
+(4, 'Pizzería La Abundancia', 35, ST_SetSRID(ST_MakePoint(-69.8500, 18.4700), 4326)::geography),
+(1, 'Pica Pollo San Vicente', 30, ST_SetSRID(ST_MakePoint(-69.8400, 18.4800), 4326)::geography),
+(2, 'Yaroas Megacentro', 15, ST_SetSRID(ST_MakePoint(-69.8450, 18.4750), 4326)::geography),
+-- Zona Central , Gascue, Zona Colonial
+(2, 'Yaroas D Luis', 15, ST_SetSRID(ST_MakePoint(-69.9250, 18.4740), 4326)::geography),
+(3, 'D Yudelka Cocina', 50, ST_SetSRID(ST_MakePoint(-69.9320, 18.4710), 4326)::geography),
+(8, 'Sushi Zone Piantini', 70, ST_SetSRID(ST_MakePoint(-69.9380, 18.4720), 4326)::geography),
+(4, 'Bella Napoli Colonial', 65, ST_SetSRID(ST_MakePoint(-69.8850, 18.4730), 4326)::geography),
+(5, 'Café El Conde', 40, ST_SetSRID(ST_MakePoint(-69.8820, 18.4750), 4326)::geography),
+(6, 'Postres Naco', 20, ST_SetSRID(ST_MakePoint(-69.9200, 18.4780), 4326)::geography);
+
+-- 3. Delivery Zones
+INSERT INTO delivery_zones (store_id, zone_name, coverage_polygon) VALUES
+(1, 'Cobertura Comedor Campus', ST_GeomFromText('POLYGON((-69.64 18.44, -69.61 18.44, -69.61 18.47, -69.64 18.47, -69.64 18.44))', 4326)),
+(2, 'Cobertura La Caleta', ST_GeomFromText('POLYGON((-69.70 18.43, -69.66 18.43, -69.66 18.46, -69.70 18.46, -69.70 18.43))', 4326)),
+(3, 'Cobertura Boca Chica', ST_GeomFromText('POLYGON((-69.63 18.43, -69.58 18.43, -69.58 18.46, -69.63 18.46, -69.63 18.43))', 4326)),
+(4, 'Cobertura ITLA y Alrededores', ST_GeomFromText('POLYGON((-69.65 18.43, -69.60 18.43, -69.60 18.47, -69.65 18.47, -69.65 18.43))', 4326)),
+(5, 'Cobertura Costera La Caleta', ST_GeomFromText('POLYGON((-69.71 18.42, -69.65 18.42, -69.65 18.45, -69.71 18.45, -69.71 18.42))', 4326)),
+(6, 'Cobertura Playera', ST_GeomFromText('POLYGON((-69.63 18.43, -69.59 18.43, -69.59 18.46, -69.63 18.46, -69.63 18.43))', 4326)),
+(7, 'Cobertura SDE Sur', ST_GeomFromText('POLYGON((-69.88 18.45, -69.82 18.45, -69.82 18.50, -69.88 18.50, -69.88 18.45))', 4326)),
+(8, 'Cobertura San Vicente', ST_GeomFromText('POLYGON((-69.86 18.46, -69.80 18.46, -69.80 18.51, -69.86 18.51, -69.86 18.46))', 4326)),
+(9, 'Cobertura Megacentro', ST_GeomFromText('POLYGON((-69.86 18.46, -69.81 18.46, -69.81 18.50, -69.86 18.50, -69.86 18.46))', 4326)),
+(10, 'Cobertura Naco', ST_GeomFromText('POLYGON((-69.95 18.45, -69.91 18.45, -69.91 18.49, -69.95 18.49, -69.95 18.45))', 4326)),
+(11, 'Cobertura Piantini Este', ST_GeomFromText('POLYGON((-69.96 18.44, -69.90 18.44, -69.90 18.49, -69.96 18.49, -69.96 18.44))', 4326)),
+(12, 'Cobertura Premium Central', ST_GeomFromText('POLYGON((-69.97 18.45, -69.91 18.45, -69.91 18.50, -69.97 18.50, -69.97 18.45))', 4326)),
+(13, 'Cobertura Zona Histórica', ST_GeomFromText('POLYGON((-69.91 18.45, -69.87 18.45, -69.87 18.49, -69.91 18.49, -69.91 18.45))', 4326)),
+(14, 'Cobertura Ciudad Nueva', ST_GeomFromText('POLYGON((-69.90 18.46, -69.87 18.46, -69.87 18.49, -69.90 18.49, -69.90 18.46))', 4326)),
+(15, 'Cobertura Ensanche Naco', ST_GeomFromText('POLYGON((-69.94 18.46, -69.90 18.46, -69.90 18.50, -69.94 18.50, -69.94 18.46))', 4326));
+
+-- 4. App Users 
+INSERT INTO app_users (name, email, phone, frequent_location) VALUES
+('Sheyla de Leon', 'sdeleon@campus.edu.do', '809-555-1001', ST_SetSRID(ST_MakePoint(-69.6200, 18.4550), 4326)::geography),
+('Frandy Sena', 'fsena@campus.edu.do', '809-555-1002', ST_SetSRID(ST_MakePoint(-69.6300, 18.4600), 4326)::geography),
+('Jambriel Calderon', 'jcalderon@campus.edu.do', '829-555-1003', ST_SetSRID(ST_MakePoint(-69.9400, 18.4800), 4326)::geography),
+('Wilcris Diaz', 'wdiaz@campus.edu.do', '849-555-1004', ST_SetSRID(ST_MakePoint(-69.8600, 18.4700), 4326)::geography),
+('Laura Martinez', 'lmartinez@gmail.com', '809-555-1005', ST_SetSRID(ST_MakePoint(-69.9200, 18.4740), 4326)::geography),
+('Pedro Alcantara', 'palcantara@hotmail.com', '829-555-1006', ST_SetSRID(ST_MakePoint(-69.6150, 18.4480), 4326)::geography),
+('Carmen Rosario', 'crosario@yahoo.com', '849-555-1007', ST_SetSRID(ST_MakePoint(-69.8850, 18.4760), 4326)::geography),
+('Julio Iglesias', 'jiglesias@empresa.com.do', '809-555-1008', ST_SetSRID(ST_MakePoint(-69.8450, 18.4820), 4326)::geography),
+('Ana Peralta', 'aperalta@gmail.com', '829-555-1009', ST_SetSRID(ST_MakePoint(-69.6750, 18.4450), 4326)::geography),
+('Miguel Santos', 'msantos@empresa.com.do', '849-555-1010', ST_SetSRID(ST_MakePoint(-69.9300, 18.4700), 4326)::geography),
+('Ramon Peña', 'rpena@hotmail.com', '809-555-1011', ST_SetSRID(ST_MakePoint(-69.9350, 18.4750), 4326)::geography),
+('Luisa Familia', 'lfamilia@yahoo.com', '829-555-1012', ST_SetSRID(ST_MakePoint(-69.6250, 18.4520), 4326)::geography);
+
+-- 5. Drivers
+INSERT INTO drivers (name, phone, current_location) VALUES
+('Carlos Mendez', '829-555-9001', ST_SetSRID(ST_MakePoint(-69.6720, 18.4480), 4326)::geography),
+('Joan Manuel', '829-555-9002', ST_SetSRID(ST_MakePoint(-69.6150, 18.4470), 4326)::geography),
+('Tito Mota', '849-555-9003', ST_SetSRID(ST_MakePoint(-69.8550, 18.4720), 4326)::geography),
+('Luis Peguero', '829-555-9004', ST_SetSRID(ST_MakePoint(-69.9280, 18.4750), 4326)::geography),
+('Alexander Brito', '809-555-9005', ST_SetSRID(ST_MakePoint(-69.6200, 18.4500), 4326)::geography),
+('Rafael Taveras', '829-555-9006', ST_SetSRID(ST_MakePoint(-69.8800, 18.4740), 4326)::geography),
+('Kelvin Guzman', '849-555-9007', ST_SetSRID(ST_MakePoint(-69.9350, 18.4710), 4326)::geography),
+('Jose Batista', '809-555-9008', ST_SetSRID(ST_MakePoint(-69.6800, 18.4420), 4326)::geography),
+('Enrique Valdez', '829-555-9009', ST_SetSRID(ST_MakePoint(-69.8400, 18.4800), 4326)::geography),
+('Wander Franco', '849-555-9010', ST_SetSRID(ST_MakePoint(-69.9220, 18.4780), 4326)::geography);
+
+-- 6. Orders
+INSERT INTO orders (user_id, store_id, driver_id, delivery_coordinate, status) VALUES
+(1, 1, 5, ST_SetSRID(ST_MakePoint(-69.6200, 18.4550), 4326)::geography, 'Delivered'), 
+(2, 3, 2, ST_SetSRID(ST_MakePoint(-69.6300, 18.4600), 4326)::geography, 'Delivered'), 
+(3, 12, 7, ST_SetSRID(ST_MakePoint(-69.9400, 18.4800), 4326)::geography, 'On the Way'), 
+(4, 7, 3, ST_SetSRID(ST_MakePoint(-69.8600, 18.4700), 4326)::geography, 'Delivered'), 
+(5, 10, 4, ST_SetSRID(ST_MakePoint(-69.9200, 18.4740), 4326)::geography, 'Preparing'), 
+(6, 6, 2, ST_SetSRID(ST_MakePoint(-69.6150, 18.4480), 4326)::geography, 'Delivered'), 
+(7, 13, 6, ST_SetSRID(ST_MakePoint(-69.8850, 18.4760), 4326)::geography, 'On the Way'), 
+(8, 8, 9, ST_SetSRID(ST_MakePoint(-69.8450, 18.4820), 4326)::geography, 'Pending'), 
+(9, 2, 1, ST_SetSRID(ST_MakePoint(-69.6750, 18.4450), 4326)::geography, 'Delivered'), 
+(10, 11, 7, ST_SetSRID(ST_MakePoint(-69.9300, 18.4700), 4326)::geography, 'Cancelled'), 
+(11, 15, 10, ST_SetSRID(ST_MakePoint(-69.9350, 18.4750), 4326)::geography, 'Delivered'), 
+(12, 4, 5, ST_SetSRID(ST_MakePoint(-69.6250, 18.4520), 4326)::geography, 'Delivered'), 
+(1, 4, 5, ST_SetSRID(ST_MakePoint(-69.6210, 18.4540), 4326)::geography, 'On the Way'), 
+(2, 6, 2, ST_SetSRID(ST_MakePoint(-69.6280, 18.4590), 4326)::geography, 'Pending'), 
+(3, 10, 4, ST_SetSRID(ST_MakePoint(-69.9380, 18.4790), 4326)::geography, 'Delivered'), 
+(4, 9, 3, ST_SetSRID(ST_MakePoint(-69.8580, 18.4680), 4326)::geography, 'Preparing'), 
+(5, 15, 10, ST_SetSRID(ST_MakePoint(-69.9180, 18.4720), 4326)::geography, 'Delivered'), 
+(6, 3, 2, ST_SetSRID(ST_MakePoint(-69.6140, 18.4470), 4326)::geography, 'Delivered'), 
+(7, 14, 6, ST_SetSRID(ST_MakePoint(-69.8840, 18.4750), 4326)::geography, 'On the Way'), 
+(9, 5, 8, ST_SetSRID(ST_MakePoint(-69.6760, 18.4460), 4326)::geography, 'Delivered'); 
+
+-- 7. Delivery Routes
+INSERT INTO delivery_routes (order_id, route_path) VALUES
+(1, ST_GeomFromText('LINESTRING(-69.6205 18.4510, -69.6200 18.4530, -69.6200 18.4550)', 4326)),
+(2, ST_GeomFromText('LINESTRING(-69.6100 18.4460, -69.6150 18.4500, -69.6300 18.4600)', 4326)),
+(3, ST_GeomFromText('LINESTRING(-69.9380 18.4720, -69.9390 18.4750, -69.9400 18.4800)', 4326)),
+(4, ST_GeomFromText('LINESTRING(-69.8500 18.4700, -69.8550 18.4700, -69.8600 18.4700)', 4326)),
+(6, ST_GeomFromText('LINESTRING(-69.6050 18.4490, -69.6100 18.4485, -69.6150 18.4480)', 4326)),
+(7, ST_GeomFromText('LINESTRING(-69.8850 18.4730, -69.8850 18.4740, -69.8850 18.4760)', 4326)),
+(9, ST_GeomFromText('LINESTRING(-69.6755 18.4480, -69.6750 18.4460, -69.6750 18.4450)', 4326)),
+(11, ST_GeomFromText('LINESTRING(-69.9200 18.4780, -69.9250 18.4760, -69.9350 18.4750)', 4326)),
+(12, ST_GeomFromText('LINESTRING(-69.6215 18.4515, -69.6230 18.4518, -69.6250 18.4520)', 4326)),
+(13, ST_GeomFromText('LINESTRING(-69.6215 18.4515, -69.6210 18.4525, -69.6210 18.4540)', 4326)),
+(15, ST_GeomFromText('LINESTRING(-69.9250 18.4740, -69.9300 18.4760, -69.9380 18.4790)', 4326)),
+(17, ST_GeomFromText('LINESTRING(-69.9200 18.4780, -69.9190 18.4750, -69.9180 18.4720)', 4326)),
+(18, ST_GeomFromText('LINESTRING(-69.6100 18.4460, -69.6120 18.4465, -69.6140 18.4470)', 4326)),
+(19, ST_GeomFromText('LINESTRING(-69.8820 18.4750, -69.8830 18.4750, -69.8840 18.4750)', 4326)),
+(20, ST_GeomFromText('LINESTRING(-69.6800 18.4400, -69.6780 18.4430, -69.6760 18.4460)', 4326));

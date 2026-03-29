@@ -1,0 +1,208 @@
+-- Funciones, Procedimientos Almacenados, Triggers, Vistas
+
+-- Funciones
+
+-- 1. Calcular distancia lineal en metros entre el usuario y un local
+CREATE FUNCTION calculate_user_store_distance(u_id BIGINT, s_id BIGINT)
+RETURNS FLOAT AS $$
+BEGIN
+    RETURN ST_Distance(
+        (SELECT frequent_location FROM app_users WHERE user_id = u_id),
+        (SELECT coordinates FROM stores WHERE store_id = s_id)
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Verificar si una coordenada de entrega está dentro de la zona de delivery del local
+CREATE FUNCTION is_in_delivery_zone(p_store_id BIGINT, p_point GEOGRAPHY)
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN ST_Contains(
+        (SELECT coverage_polygon::geometry FROM delivery_zones WHERE store_id = p_store_id LIMIT 1),
+        p_point::geometry
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Calcular la longitud total de una ruta de entrega en kilómetros
+CREATE FUNCTION route_length_km(p_route_id BIGINT)
+RETURNS FLOAT AS $$
+BEGIN
+    RETURN ST_Length(ST_Transform((SELECT route_path FROM delivery_routes WHERE route_id = p_route_id), 3857)) / 1000;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Procedimientos Almacenados
+
+-- 1. Registrar un pedido validando automáticamente si el repartidor está cerca
+CREATE PROCEDURE register_nearby_order(
+    p_user_id BIGINT, p_store_id BIGINT, p_delivery_coord GEOGRAPHY
+) AS $$
+BEGIN
+    INSERT INTO orders (user_id, store_id, delivery_coordinate, status)
+    VALUES (p_user_id, p_store_id, p_delivery_coord, 'Pending');
+    RAISE NOTICE 'Order successfully registered for user %', p_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Asignar el repartidor más cercano a un pedido específico
+CREATE PROCEDURE assign_nearest_driver(p_order_id BIGINT)
+AS $$
+DECLARE
+    v_store_coord GEOGRAPHY;
+BEGIN
+    SELECT s.coordinates INTO v_store_coord 
+    FROM stores s JOIN orders o ON s.store_id = o.store_id 
+    WHERE o.order_id = p_order_id;
+
+    UPDATE orders 
+    SET driver_id = (
+        SELECT driver_id FROM drivers 
+        ORDER BY current_location <-> v_store_coord LIMIT 1
+    )
+    WHERE order_id = p_order_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Actualizar la ubicación de un repartidor
+CREATE PROCEDURE update_driver_gps(p_driver_id BIGINT, p_lat FLOAT, p_lon FLOAT)
+AS $$
+BEGIN
+    UPDATE drivers 
+    SET current_location = ST_SetSRID(ST_MakePoint(p_lon, p_lat), 4326)::geography
+    WHERE driver_id = p_driver_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Triggers
+
+-- 1. Validar que un local no se cree con capacidad negativa (Integridad)
+CREATE FUNCTION fn_validate_capacity() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.capacity <= 0 THEN
+        RAISE EXCEPTION 'Store capacity must be greater than zero';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tg_validate_store_capacity
+BEFORE INSERT ON stores FOR EACH ROW EXECUTE FUNCTION fn_validate_capacity();
+
+-- 2. Auto-asignar estado "En Camino" cuando se vincula un repartidor a un pedido
+CREATE FUNCTION fn_update_order_status() 
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.driver_id IS DISTINCT FROM NEW.driver_id AND NEW.driver_id IS NOT NULL THEN
+        NEW.status := 'On the Way';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tg_order_status_update ON orders;
+
+CREATE TRIGGER tg_order_status_update
+BEFORE UPDATE ON orders
+FOR EACH ROW EXECUTE FUNCTION fn_update_order_status();
+
+-- 3. Auditoría: Evitar que se borren pedidos que ya fueron entregados
+CREATE FUNCTION fn_prevent_deleting_delivered() RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status = 'Delivered' THEN
+        RAISE EXCEPTION 'Cannot delete records of orders that have already been delivered';
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tg_audit_orders
+BEFORE DELETE ON orders FOR EACH ROW EXECUTE FUNCTION fn_prevent_deleting_delivered();
+
+-- Vistas
+
+-- 1. Vista de locales con su cantidad de pedidos actuales
+CREATE VIEW vw_store_summary AS
+SELECT s.name AS store_name, c.name AS category_name, COUNT(o.order_id) AS total_orders
+FROM stores s
+JOIN categories c ON s.category_id = c.category_id
+LEFT JOIN orders o ON s.store_id = o.store_id
+GROUP BY s.name, c.name;
+
+-- 2. Vista de proximidad: Usuarios que tienen locales a menos de 2km de su casa
+CREATE VIEW vw_users_with_nearby_stores AS
+SELECT u.name AS user_name, s.name AS nearby_store, 
+       ST_Distance(u.frequent_location, s.coordinates) AS distance_meters
+FROM app_users u, stores s
+WHERE ST_DWithin(u.frequent_location, s.coordinates, 2000);
+
+-- 3. Vista de zonas de delivery activas
+CREATE VIEW vw_total_coverage AS
+SELECT zone_id, zone_name, ST_Area(coverage_polygon::geography) / 1000000 AS area_km2
+FROM delivery_zones;
+
+--===========================================
+-- Prueba de funcionalidad
+--===========================================
+
+--Funciones
+-- 1. Probar distancia entre el usuario 'Frandy Sena' (ID 2) y 'Comedor Doña Tata' (ID 1)
+SELECT calculate_user_store_distance(2, 1) AS distance_in_meters;
+
+-- 2. Probar si una coordenada específica está en la zona de delivery del local 1
+-- (Usamos una coordenada cercana al ITLA)
+SELECT is_in_delivery_zone(1, ST_SetSRID(ST_MakePoint(-69.62, 18.45), 4326)::geography) AS is_inside;
+
+-- 3. Probar la longitud de la ruta de entrega ID 1 en kilómetros
+SELECT route_length_km(1) AS total_km;
+
+--Procedimientos Almacenados
+-- 1. Registrar un nuevo pedido para el usuario 1 en el local 4
+CALL register_nearby_order(1, 4, ST_SetSRID(ST_MakePoint(-69.6210, 18.4540), 4326)::geography);
+
+-- Verificar que se registró (debe aparecer al final con status 'Pending')
+SELECT * FROM orders ORDER BY order_id DESC LIMIT 1;
+
+-- 2. Actualizar el GPS del repartidor 'Carlos Mendez' (ID 1) a una nueva posición
+CALL update_driver_gps(1, 18.4490, -69.6730);
+
+-- Verificar el cambio de ubicación
+SELECT name, current_location FROM drivers WHERE driver_id = 1;
+
+-- 3. Asignar el repartidor más cercano al pedido que acabamos de crear (supongamos que es el ID 21)
+-- Nota: Reemplaza el ID por el último generado en tu tabla
+CALL assign_nearest_driver(21);
+
+-- Verificar que se asignó un driver_id
+SELECT order_id, driver_id, status FROM orders WHERE order_id = 21;
+
+--Triggers
+-- TEST 1: Validar capacidad (Debe lanzar un ERROR)
+-- Intentamos crear un local con capacidad 0 o negativa
+INSERT INTO stores (category_id, name, capacity, coordinates) 
+VALUES (1, 'Negative Store', -10, ST_SetSRID(ST_MakePoint(-69.9, 18.4), 4326)::geography);
+
+-- TEST 2: Cambio de estado automático (Debe cambiar a 'On the Way')
+-- Creamos un pedido pendiente sin repartidor
+INSERT INTO orders (user_id, store_id, delivery_coordinate, status, driver_id)
+VALUES (1, 1, ST_SetSRID(ST_MakePoint(-69.62, 18.45), 4326)::geography, 'Pending', NULL);
+
+-- Obtenemos el ID del pedido creado (ejemplo: 22) y le asignamos un repartidor
+UPDATE orders SET driver_id = 5 WHERE order_id = 22;
+
+-- Verificamos que el estado cambió solo a 'On the Way'
+SELECT status FROM orders WHERE order_id = 22;
+
+-- TEST 3: Auditoría / Prohibir borrar entregados (Debe lanzar un ERROR)
+-- Intentamos borrar el pedido 1 que ya tiene estado 'Delivered'
+DELETE FROM orders WHERE order_id = 1;
+
+--Vistas
+-- 1. Ver el resumen de órdenes por local
+SELECT * FROM vw_store_summary;
+
+-- 2. Ver qué usuarios tienen restaurantes a menos de 2km de su ubicación frecuente
+SELECT * FROM vw_users_with_nearby_stores;
+
+-- 3. Ver el tamaño en KM2 de las zonas de cobertura
+SELECT * FROM vw_total_coverage;
